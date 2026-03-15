@@ -1,0 +1,47 @@
+# Byte-compiled
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environments
+.env
+.venv/
+venv/
+env/
+
+# Model weights (large files)
+weights/*.pt
+weights/*.pth
+weights/*.bin
+!weights/.gitkeep
+
+# Project outputs
+projects/*/raw_media/
+projects/*/renders/
+projects/*/cache/
+projects/*/scenes/
+projects/*/images/
+!projects/.gitkeep
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Database
+*.db
+*.db-journal
+
+# Fonts (user-supplied)
+fonts/*.ttf
+fonts/*.otf
+!fonts/.gitkeep
+
+# LUTs
+luts/*.cube
+luts/*.3dl
+!luts/.gitkeep
