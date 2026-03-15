@@ -35,8 +35,14 @@ def run_pipeline(
     text_entries: Optional[list[dict]] = None,
     image_queries: Optional[list[str]] = None,
     preview: bool = False,
+    subject: str = "",          # natural language e.g. "andrew tate fighting"
+    use_transcription: bool = True,  # transcribe video audio for smarter ranking
 ) -> Path:
     """Execute the full video generation pipeline for a project.
+
+    When *subject* is provided and no *source_urls* are given, the pipeline
+    automatically searches YouTube, downloads the top results, transcribes
+    the speech, and ranks clips by both visuals AND what is being said.
 
     Returns the path to the rendered output file.
     """
@@ -45,6 +51,15 @@ def run_pipeline(
     proj_dir = get_project_path(project_id)
 
     log.info("═══ Pipeline START for project %s ═══", project_id)
+
+    # ── 0. YouTube search (when no URLs supplied) ───────────────────
+    if subject and not source_urls and not local_files:
+        log.info("Step 0: Searching YouTube for: %s", subject)
+        from app.search.youtube_search import search_youtube
+        source_urls = search_youtube(subject, max_results=8)
+        if not source_urls:
+            raise ValueError(f"YouTube search returned no results for: '{subject}'")
+        log.info("Step 0: Found %d video(s)", len(source_urls))
 
     # ── 1. Ingestion ────────────────────────────────────────────────
     from app.ingestion.downloader import (
@@ -100,6 +115,24 @@ def run_pipeline(
     project.scene_list = all_scenes
     log.info("Found %d total scenes.", len(all_scenes))
 
+    # ── 3.5 Transcription ──────────────────────────────────────────
+    # When the user gave a subject, transcribe every downloaded video so
+    # the ranker can find moments where relevant things are being *said*.
+    transcripts: dict[str, list[dict]] = {}
+    keywords: list[str] = []
+    if subject and use_transcription and video_files:
+        log.info("Step 3.5: Transcribing %d video(s) with Whisper…", len(video_files))
+        from app.analysis.transcriber import transcribe_video, extract_keywords
+        for vf in video_files:
+            try:
+                segs = transcribe_video(vf)
+                transcripts[str(vf)] = segs
+            except Exception as exc:
+                log.warning("Transcription failed for %s: %s", vf.name, exc)
+        # build keyword list from subject (stripped of stop words)
+        keywords = extract_keywords(subject)
+        log.info("Subject keywords: %s", ", ".join(keywords))
+
     # ── 4. Audio analysis ───────────────────────────────────────────
     log.info("Step 4: Analysing audio…")
     from app.analysis.audio_analyser import analyse_audio
@@ -108,7 +141,18 @@ def run_pipeline(
     # ── 5. Clip ranking ─────────────────────────────────────────────
     log.info("Step 5: Ranking %d clips…", len(all_scenes))
     from app.analysis.clip_ranker import rank_scenes
-    ranked = rank_scenes(all_scenes, prompts=["cinematic", "hero shot", "dramatic"])
+    # Build visual prompts: start with subject words, fall back to generic prompts
+    visual_prompts = (
+        [subject, "cinematic", "dramatic"]
+        if subject else
+        ["cinematic", "hero shot", "dramatic"]
+    )
+    ranked = rank_scenes(
+        all_scenes,
+        prompts=visual_prompts,
+        transcripts=transcripts or None,
+        keywords=keywords or None,
+    )
     project.ranked_clips = ranked
 
     # ── 6. Timeline planning ────────────────────────────────────────

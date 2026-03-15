@@ -97,7 +97,8 @@ class ClipScore(BaseModel):
     sharpness: float = 0.0
     face_prominence: float = 0.0
     clip_similarity: float = 0.0       # CLIP score vs prompt
-    aesthetic_score: float = 0.0        # from trained ranker
+    aesthetic_score: float = 0.0       # from trained ranker
+    transcript_score: float = 0.0      # keyword match in spoken audio
     composite: float = 0.0             # weighted total
 
 

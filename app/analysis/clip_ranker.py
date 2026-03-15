@@ -171,24 +171,62 @@ def score_scene(
     scene: SceneInfo,
     prompts: Optional[list[str]] = None,
     weights: Optional[dict[str, float]] = None,
+    transcript_segments: Optional[list[dict]] = None,
+    keywords: Optional[list[str]] = None,
 ) -> ClipScore:
-    """Compute all scores for a scene, returning a ClipScore."""
+    """Compute all scores for a scene, returning a ClipScore.
+
+    Args:
+        scene:                The scene to score.
+        prompts:              CLIP text prompts for visual similarity.
+        weights:              Per-metric composite weights.
+        transcript_segments:  Whisper segments for the source video
+                              e.g. [{"start":1.2,"end":3.4,"text":"..."}]
+        keywords:             Keywords extracted from the user's subject/prompt.
+                              Used to score transcript relevance.
+    """
     prompts = prompts or ["cinematic", "dramatic", "visually striking"]
-    w = weights or {
-        "motion": 0.15,
-        "brightness": 0.05,
-        "contrast": 0.10,
-        "sharpness": 0.15,
-        "face_prominence": 0.10,
-        "clip_similarity": 0.25,
-        "aesthetic_score": 0.20,
-    }
+
+    # When transcript data is available, boost its weight and reduce others slightly
+    has_transcript = bool(transcript_segments and keywords)
+    w = weights or (
+        {
+            "motion": 0.12,
+            "brightness": 0.04,
+            "contrast": 0.08,
+            "sharpness": 0.12,
+            "face_prominence": 0.09,
+            "clip_similarity": 0.20,
+            "aesthetic_score": 0.15,
+            "transcript_score": 0.20,   # strong signal when available
+        }
+        if has_transcript else
+        {
+            "motion": 0.15,
+            "brightness": 0.05,
+            "contrast": 0.10,
+            "sharpness": 0.15,
+            "face_prominence": 0.10,
+            "clip_similarity": 0.25,
+            "aesthetic_score": 0.20,
+            "transcript_score": 0.00,
+        }
+    )
 
     frames = _sample_frames(scene.source_file, scene.start_time, scene.end_time)
     if not frames:
         return ClipScore()
 
     mid = frames[len(frames) // 2]
+
+    # Transcript score
+    tscore = 0.0
+    if has_transcript:
+        from app.analysis.transcriber import transcript_for_range, keyword_score
+        clip_text = transcript_for_range(
+            transcript_segments, scene.start_time, scene.end_time
+        )
+        tscore = keyword_score(clip_text, keywords)
 
     s = ClipScore(
         motion=min(_motion_score(frames) / 30.0, 1.0),
@@ -198,11 +236,9 @@ def score_scene(
         face_prominence=min(_face_prominence(mid), 1.0),
         clip_similarity=max(_clip_similarity(frames, prompts), 0.0),
         aesthetic_score=max(_aesthetic_score(frames), 0.0),
+        transcript_score=tscore,
     )
-
-    s.composite = sum(
-        getattr(s, k, 0.0) * v for k, v in w.items()
-    )
+    s.composite = sum(getattr(s, k, 0.0) * v for k, v in w.items())
     return s
 
 
@@ -213,16 +249,33 @@ def rank_scenes(
     prompts: Optional[list[str]] = None,
     weights: Optional[dict[str, float]] = None,
     top_n: Optional[int] = None,
+    transcripts: Optional[dict[str, list[dict]]] = None,
+    keywords: Optional[list[str]] = None,
 ) -> list[RankedClip]:
-    """Score and rank all scenes, returning RankedClip objects."""
+    """Score and rank all scenes, returning RankedClip objects.
+
+    Args:
+        transcripts: Maps source_file path → list of Whisper segments.
+                     When provided, transcript_score contributes to ranking.
+        keywords:    Keywords from the user's subject query.
+    """
     ranked: list[RankedClip] = []
     for scene in scenes:
-        scores = score_scene(scene, prompts=prompts, weights=weights)
+        segs = (transcripts or {}).get(scene.source_file)
+        scores = score_scene(
+            scene,
+            prompts=prompts,
+            weights=weights,
+            transcript_segments=segs,
+            keywords=keywords,
+        )
         ranked.append(RankedClip(scene=scene, scores=scores))
 
     ranked.sort(key=lambda c: c.scores.composite, reverse=True)
     if top_n:
         ranked = ranked[:top_n]
-    log.info("Ranked %d clips (top composite=%.3f)", len(ranked),
-             ranked[0].scores.composite if ranked else 0)
+    log.info("Ranked %d clips (top composite=%.3f, transcript used=%s)",
+             len(ranked),
+             ranked[0].scores.composite if ranked else 0,
+             bool(transcripts))
     return ranked
